@@ -10,6 +10,12 @@ pub enum CngError {
     InvalidHashLength,
     #[error("Certificate chain error")]
     InvalidCertificateChain,
+    #[error("Invalid property error")]
+    InvalidCertificateProperty,
+    #[error("Not found certificate")]
+    NotFoundCertificate,
+    #[error("Unsupported store operation")]
+    UnsupportedStoreOperation,
     #[error(transparent)]
     WindowsError(#[from] windows::core::Error),
 }

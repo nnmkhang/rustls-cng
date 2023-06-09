@@ -7,6 +7,10 @@ use rustls::{
 };
 use sha2::digest::Digest;
 
+use windows::{
+    Win32::Security::{Cryptography::*},
+};
+
 use crate::{
     error::CngError,
     key::{AlgorithmGroup, NCryptKey, SignaturePadding},
@@ -77,12 +81,12 @@ impl CngSigningKey {
     pub fn supported_schemes(&self) -> &[SignatureScheme] {
         match self.algorithm_group {
             AlgorithmGroup::Rsa => &[
-                SignatureScheme::RSA_PKCS1_SHA256,
-                SignatureScheme::RSA_PKCS1_SHA384,
-                SignatureScheme::RSA_PKCS1_SHA512,
                 SignatureScheme::RSA_PSS_SHA256,
                 SignatureScheme::RSA_PSS_SHA384,
+                SignatureScheme::RSA_PKCS1_SHA256,
+                SignatureScheme::RSA_PKCS1_SHA384,
                 SignatureScheme::RSA_PSS_SHA512,
+                SignatureScheme::RSA_PKCS1_SHA512,
             ],
             AlgorithmGroup::Ecdsa | AlgorithmGroup::Ecdh => match self.bits {
                 256 => &[SignatureScheme::ECDSA_NISTP256_SHA256],
@@ -100,7 +104,8 @@ struct CngSigner {
 }
 
 impl CngSigner {
-    fn hash(&self, message: &[u8]) -> Result<(Vec<u8>, SignaturePadding), Error> {
+//    fn hash(&self, message: &[u8]) -> Result<(Vec<u8>, SignaturePadding), Error> {
+    fn user_sha2_for_hash(&self, message: &[u8]) -> Result<(Vec<u8>, SignaturePadding), Error> {
         let (hash, padding) = match self.scheme {
             SignatureScheme::RSA_PKCS1_SHA256 => (
                 sha2::Sha256::digest(message).to_vec(),
@@ -138,6 +143,64 @@ impl CngSigner {
         };
         Ok((hash, padding))
     }
+
+    fn hash(&self, message: &[u8]) -> Result<(Vec<u8>, SignaturePadding), Error> {
+        let (alg, padding) = match self.scheme {
+            SignatureScheme::RSA_PKCS1_SHA256 => (
+                BCRYPT_SHA256_ALG_HANDLE,
+                SignaturePadding::Pkcs1,
+            ),
+            SignatureScheme::RSA_PKCS1_SHA384 => (
+                BCRYPT_SHA384_ALG_HANDLE,
+                SignaturePadding::Pkcs1,
+            ),
+            SignatureScheme::RSA_PKCS1_SHA512 => (
+                BCRYPT_SHA512_ALG_HANDLE,
+                SignaturePadding::Pkcs1,
+            ),
+            SignatureScheme::RSA_PSS_SHA256 => (
+                BCRYPT_SHA256_ALG_HANDLE,
+                SignaturePadding::Pss,
+            ),
+            SignatureScheme::RSA_PSS_SHA384 => (
+                BCRYPT_SHA384_ALG_HANDLE,
+                SignaturePadding::Pss,
+            ),
+            SignatureScheme::RSA_PSS_SHA512 => (
+                BCRYPT_SHA512_ALG_HANDLE,
+                SignaturePadding::Pss,
+            ),
+            SignatureScheme::ECDSA_NISTP256_SHA256 => (
+                BCRYPT_SHA256_ALG_HANDLE,
+                SignaturePadding::None,
+            ),
+            SignatureScheme::ECDSA_NISTP384_SHA384 => (
+                BCRYPT_SHA384_ALG_HANDLE,
+                SignaturePadding::None,
+            ),
+            _ => return Err(Error::General("Unsupported signature scheme!".to_owned())),
+        };
+
+        let hash_len = match alg {
+            BCRYPT_SHA256_ALG_HANDLE => 32,
+            BCRYPT_SHA384_ALG_HANDLE => 48,
+            BCRYPT_SHA512_ALG_HANDLE => 64,
+            _ => return Err(Error::General("Unsupported hash algorithm!".to_owned())),
+        };
+
+        let mut hash = vec![0u8; hash_len];
+
+        unsafe {
+            BCryptHash(
+                alg,
+                None,               // pbsecret
+                message,
+                hash.as_mut())
+            .map_err(|e| Error::General(e.to_string()))?;
+        };
+
+        Ok((hash, padding))
+    }
 }
 
 impl Signer for CngSigner {
@@ -165,8 +228,10 @@ impl Signer for CngSigner {
 impl SigningKey for CngSigningKey {
     fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
         let supported = self.supported_schemes();
-        for scheme in offered {
-            if supported.contains(scheme) {
+//        for scheme in offered {
+//            if supported.contains(scheme) {
+        for scheme in supported {
+            if offered.contains(scheme) {
                 return Some(Box::new(CngSigner {
                     key: self.key.clone(),
                     scheme: *scheme,
